@@ -72,10 +72,9 @@ def find_sync(samples):
     return -1
 
 def decode_byte(s1, s2, s3):
-    """3+3+2 对称解码 - 与编码器完全对应"""
     high = (s1 & 0x07) << 5
     mid = (s2 & 0x07) << 2
-    low = s3 & 0x03           # 直接取低2位，不再有借位逻辑
+    low = s3 & 0x03
     return high | mid | low
 
 def decode(samples):
@@ -137,13 +136,13 @@ def decode_file(path):
         samples.append(struct.unpack('<h', frames[i:i+2])[0])
 
     for hook in get_hooks('decode_pre'):
-        samples = hook['func'](samples)
+        samples = hook(samples)
 
     cmd = decode(samples)
 
     for hook in get_hooks('decode_post'):
         if cmd:
-            cmd = hook['func'](cmd)
+            cmd = hook(cmd)
 
     if cmd:
         print(f"[OK] {cmd}")

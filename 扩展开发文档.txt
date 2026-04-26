@@ -1,0 +1,349 @@
+================================================================================
+                          光圈科技扩展开发指南
+================================================================================
+
+文档编号: AACIP-EXT-GUIDE-2026.04.26-v1.0
+密级: 公开（社区开发用）
+标题: 音频管理通道协议 - 扩展模块开发指南
+版本: 1.0
+最后更新: 2026-04-26
+
+================================================================================
+                              导言
+================================================================================
+
+本指南面向社区开发者，介绍如何为音频管理通道协议编写扩展模块。
+
+核心协议只做最基础的音频编码和解码，所有高级功能（校验、握手、加密、日志、
+重传等）都通过扩展模块实现。这种设计让核心保持稳定，同时给社区最大的自由。
+
+================================================================================
+                            1. 模块目录
+================================================================================
+
+所有扩展模块必须放在 mk/ 目录下：
+
+项目目录/
+├── encoder.py           # 核心编码器（不要修改）
+├── decoder.py           # 核心解码器（不要修改）
+├── config.json          # 配置文件（可选）
+└── mk/                  # 扩展模块目录
+    ├── __init__.py      # 自动加载器
+    ├── module_crc.py    # CRC校验模块
+    ├── module_log.py    # 日志模块
+    └── module_xxx.py    # 你的模块
+
+================================================================================
+                            2. 模块命名规范
+================================================================================
+
+- 文件名必须以 module_ 开头
+- 使用小写字母和下划线
+- 示例: module_crc.py, module_handshake.py
+
+================================================================================
+                            3. 模块基本结构
+================================================================================
+
+每个模块必须实现 register() 函数，返回模块信息字典：
+
+```python
+def register():
+    return {
+        'name': '模块名称',           # 必填
+        'version': '1.0',             # 必填
+        'author': '你的名字',          # 必填
+        'description': '模块功能描述', # 必填
+        'hooks': ['hook_name_1', 'hook_name_2']  # 可选，注册要用的钩子
+    }
+================================================================================
+4. 可用钩子
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 钩子名称 │ 触发时机 │ 参数 │ 返回值 │
+├─────────────────┼─────────────────┼───────────────────┼───────────────────┤
+│ encode_pre │ 编码前 │ cmd (字符串) │ 修改后的cmd │
+│ encode_post │ 编码后 │ samples (列表) │ 修改后的samples │
+│ decode_pre │ 解码前 │ raw_bytes (列表) │ 修改后的raw_bytes │
+│ decode_post │ 解码后 │ cmd_str (字符串) │ 修改后的cmd_str │
+└─────────────────┴─────────────────┴───────────────────┴───────────────────┘
+
+钩子函数命名格式: hook_ + 钩子名称
+
+示例:
+
+注册 hooks: ['encode_pre', 'decode_post']
+
+实现函数: hook_encode_pre(), hook_decode_post()
+
+================================================================================
+5. 钩子函数实现
+================================================================================
+
+5.1 encode_pre - 编码前修改指令
+
+在指令被编码成音频之前，可以修改、包装或加密指令。
+
+python
+def hook_encode_pre(cmd):
+    """编码前钩子：在指令前添加时间戳"""
+    from datetime import datetime
+    return f"[{datetime.now()}] {cmd}"
+5.2 encode_post - 编码后修改音频
+
+在音频数据生成后，可以修改、添加或处理音频样本。
+
+python
+def hook_encode_post(samples):
+    """编码后钩子：添加水印或调整音量"""
+    # 在音频末尾添加一个特殊标记
+    from encoder import gen_tone, FREQ_SYNC
+    samples += gen_tone(FREQ_SYNC, 0.1)
+    return samples
+5.3 decode_pre - 解码前修改数据
+
+在解码原始字节之前，可以预处理数据。
+
+python
+def hook_decode_pre(raw_bytes):
+    """解码前钩子：过滤特定模式"""
+    # 移除转义字符
+    return [b for b in raw_bytes if b != 0x1B]
+5.4 decode_post - 解码后修改指令
+
+在解码出指令字符串后，可以验证、解包或记录日志。
+
+python
+def hook_decode_post(cmd_str):
+    """解码后钩子：记录日志"""
+    print(f"[LOG] {datetime.now()}: {cmd_str}")
+    return cmd_str
+================================================================================
+6. 完整示例
+================================================================================
+
+6.1 CRC校验模块 (module_crc.py)
+
+python
+"""
+CRC校验模块
+功能：为每条指令添加CRC校验码，解码时验证完整性
+"""
+
+def register():
+    return {
+        'name': 'CRC16校验',
+        'version': '1.0',
+        'author': '社区开发者',
+        'description': '添加CRC16校验，检测数据完整性',
+        'hooks': ['encode_pre', 'decode_post']
+    }
+
+def crc16(data):
+    """计算CRC16校验值"""
+    crc = 0x0000
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            if crc & 0x0001:
+                crc = (crc >> 1) ^ 0xA001
+            else:
+                crc >>= 1
+    return crc & 0xFFFF
+
+def hook_encode_pre(cmd):
+    """编码前：计算CRC并附加到指令末尾"""
+    crc_val = crc16(cmd.encode('utf-8'))
+    return f"{cmd}|{crc_val:04X}"
+
+def hook_decode_post(cmd_str):
+    """解码后：验证CRC"""
+    if '|' in cmd_str:
+        cmd_part, crc_part = cmd_str.rsplit('|', 1)
+        expected = int(crc_part, 16)
+        actual = crc16(cmd_part.encode('utf-8'))
+        if expected != actual:
+            raise ValueError(f"CRC校验失败: 期望{expected:04X} 实际{actual:04X}")
+        return cmd_part
+    return cmd_str
+6.2 日志模块 (module_log.py)
+
+python
+"""
+日志模块
+功能：记录解码时间和指令信息
+"""
+
+from datetime import datetime
+
+def register():
+    return {
+        'name': '日志记录',
+        'version': '1.0',
+        'author': '社区开发者',
+        'description': '记录每条指令的解码时间和长度',
+        'hooks': ['decode_post']
+    }
+
+def hook_decode_post(cmd_str):
+    """解码后：打印日志"""
+    print(f"[LOG] 解码时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"[LOG] 指令长度: {len(cmd_str)} 字符")
+    print(f"[LOG] 指令内容: {cmd_str[:50]}{'...' if len(cmd_str) > 50 else ''}")
+    return cmd_str
+6.3 简单握手模块 (module_handshake.py)
+
+python
+"""
+握手模块
+功能：实现简单的请求-确认机制
+"""
+
+def register():
+    return {
+        'name': '简单握手',
+        'version': '1.0',
+        'author': '社区开发者',
+        'description': '添加请求确认机制',
+        'hooks': ['encode_pre', 'decode_post']
+    }
+
+def hook_encode_pre(cmd):
+    """编码前：为需要确认的指令添加标记"""
+    if cmd.startswith("REQ:"):
+        return f"[NEED_ACK]{cmd[4:]}"
+    return cmd
+
+def hook_decode_post(cmd_str):
+    """解码后：处理确认请求"""
+    if cmd_str.startswith("[NEED_ACK]"):
+        real_cmd = cmd_str[10:]
+        print(f"[握手] 收到请求: {real_cmd}")
+        print(f"[握手] 自动回复: ACK")
+        # 这里可以调用编码器发送ACK
+        return real_cmd
+    if cmd_str == "ACK":
+        print(f"[握手] 收到确认回复")
+        return ""
+    return cmd_str
+6.4 加密模块示例 (module_encrypt.py)
+
+python
+"""
+加密模块
+功能：简单的XOR加密
+"""
+
+import base64
+
+SECRET_KEY = 0xAA  # 加密密钥，社区可以自己定义
+
+def register():
+    return {
+        'name': 'XOR加密',
+        'version': '1.0',
+        'author': '社区开发者',
+        'description': '使用XOR加密指令内容',
+        'hooks': ['encode_pre', 'decode_post']
+    }
+
+def xor_encrypt(data, key):
+    """XOR加密/解密"""
+    return bytes([b ^ key for b in data])
+
+def hook_encode_pre(cmd):
+    """编码前：加密指令"""
+    encrypted = xor_encrypt(cmd.encode('utf-8'), SECRET_KEY)
+    return base64.b64encode(encrypted).decode('ascii')
+
+def hook_decode_post(cmd_str):
+    """解码后：解密指令"""
+    try:
+        encrypted = base64.b64decode(cmd_str)
+        decrypted = xor_encrypt(encrypted, SECRET_KEY)
+        return decrypted.decode('utf-8')
+    except:
+        return cmd_str  # 解密失败时返回原内容
+================================================================================
+7. 模块加载顺序
+================================================================================
+
+模块按照文件名首字母顺序加载。如果有依赖关系，可以在文件名中用数字控制顺序：
+
+01_module_a.py
+
+02_module_b.py
+
+03_module_c.py
+
+同一钩子的多个模块按加载顺序依次执行。
+
+================================================================================
+8. 调试与测试
+================================================================================
+
+8.1 查看已加载模块
+
+在 encoder.py 或 decoder.py 中添加调试代码：
+
+python
+from mk import get_modules
+print(get_modules())
+8.2 测试单个模块
+
+创建测试文件 test_module.py：
+
+python
+import sys
+sys.path.insert(0, '.')
+
+# 模拟核心环境
+from mk.module_crc import hook_encode_pre, hook_decode_post
+
+cmd = "PING"
+encoded = hook_encode_pre(cmd)
+print(f"编码: {encoded}")
+
+decoded = hook_decode_post(encoded)
+print(f"解码: {decoded}")
+================================================================================
+9. 发布模块
+================================================================================
+
+将你的 .py 文件放入 mk/ 目录
+
+确保 register() 函数返回完整信息
+
+测试通过后分享给社区
+
+模块可以发布在：
+
+光圈科技社区论坛
+
+GitHub
+
+其他开发者平台
+
+================================================================================
+10. 常见问题
+================================================================================
+
+Q: 编码器和解码器需要修改吗？
+A: 不需要。核心代码保持不变，所有扩展通过 mk/ 目录实现。
+
+Q: 多个模块冲突怎么办？
+A: 调整文件名控制加载顺序，或修改模块内部逻辑。
+
+Q: 模块可以不写钩子吗？
+A: 可以。register() 中 hooks 可以留空，模块仍然会被加载。
+
+Q: 钩子函数可以修改参数吗？
+A: 可以。返回值会传递给下一个模块或核心代码。
+
+Q: 模块抛出异常会怎样？
+A: 异常会中断钩子链，核心会继续执行（但可能导致功能异常）。
+
+================================================================================
+END OF GUIDE
+================================================================================

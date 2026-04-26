@@ -43,12 +43,13 @@ def detect_symbol(window, fallback=None):
         if power > best_power:
             best_power, best_sym = power, sym
     avg_power = sum(powers.values()) / len(powers) if powers else 0
+    if avg_power < 1.0:
+        return fallback
     if best_power > avg_power * 2.5:
         return best_sym
     return fallback
 
 def find_sync(samples):
-    """自适应相对阈值查找同步信号"""
     win = int(SAMPLE_RATE * 0.1)
     step = int(SAMPLE_RATE * 0.05)
     max_power = 0
@@ -66,21 +67,16 @@ def find_sync(samples):
         return -1
 
     avg_power = sum(powers) / len(powers)
-    # 动态阈值：最强功率至少是平均功率的 4 倍
     if max_power > avg_power * 4:
         return best_pos + int(SAMPLE_RATE * SYNC_DUR)
     return -1
 
 def decode_byte(s1, s2, s3):
-    """完全对称解码"""
+    """3+3+2 对称解码 - 与编码器完全对应"""
     high = (s1 & 0x07) << 5
     mid = (s2 & 0x07) << 2
-    low = (s3 >> 1) & 0x03
-    borrow = s3 & 1
-    byte = high | mid | low
-    if borrow:
-        byte |= 0x10
-    return byte
+    low = s3 & 0x03           # 直接取低2位，不再有借位逻辑
+    return high | mid | low
 
 def decode(samples):
     sync_end = find_sync(samples)
